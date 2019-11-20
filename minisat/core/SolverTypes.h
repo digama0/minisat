@@ -250,6 +250,11 @@ class ClauseAllocator : public RegionAllocator<uint32_t>
     }
 };
 
+#define CLAUSE_ID(cr)   ((uint64_t)(cr) * 2 + 2)
+#define LITERAL_ID(lit) ((uint64_t)toInt(lit) * 2 + 5)
+#define EMPTY_ID        (uint64_t)3
+#define TEMP_ID         (uint64_t)1
+
 
 //=================================================================================================
 // OccLists -- a class for maintaining occurence lists with lazy deletion:

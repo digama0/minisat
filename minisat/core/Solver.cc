@@ -137,7 +137,8 @@ bool Solver::addClause_(vec<Lit>& ps)
     // Check if clause is satisfied and remove false/duplicate literals:
     sort(ps);
 
-    vec<Lit>    oc;
+    vec<Lit> oc;
+    vec<uint64_t> chain;
     oc.clear();
 
     Lit p; int i, j, flag = 0;
@@ -152,26 +153,45 @@ bool Solver::addClause_(vec<Lit>& ps)
             return true;
         else if (value(ps[i]) != l_False && ps[i] != p)
             ps[j++] = p = ps[i];
+        else
+            chain.push(LITERAL_ID(~ps[i]));
     ps.shrink(i - j);
 
-    if (flag && (output != NULL)) {
-      for (i = j = 0, p = lit_Undef; i < ps.size(); i++)
-        fprintf(output, "%i ", (var(ps[i]) + 1) * (-2 * sign(ps[i]) + 1));
-      fprintf(output, "0\n");
+    uint64_t id; CRef cr;
+    if (ps.size() == 0) id = EMPTY_ID;
+    else if (ps.size() == 1) id = LITERAL_ID(ps[0]);
+    else id = CLAUSE_ID(cr = ca.alloc(ps, false));
 
-      fprintf(output, "d ");
-      for (i = j = 0, p = lit_Undef; i < oc.size(); i++)
-        fprintf(output, "%i ", (var(oc[i]) + 1) * (-2 * sign(oc[i]) + 1));
-      fprintf(output, "0\n");
+    if (output != NULL) {
+        fprintf(output, "o %ld  ", flag ? TEMP_ID : id);
+        for (i = 0; i < oc.size(); i++)
+            fprintf(output, "%i ", (var(oc[i]) + 1) * (-2 * sign(oc[i]) + 1));
+        fprintf(output, "0\n");
+
+        if (flag) {
+            fprintf(output, "a %ld  ", id);
+            for (i = 0; i < ps.size(); i++)
+                fprintf(output, "%i ", (var(ps[i]) + 1) * (-2 * sign(ps[i]) + 1));
+            fprintf(output, "0  l ");
+            for (i = 0; i < chain.size(); i++)
+                fprintf(output, "%ld ", chain[i]);
+            fprintf(output, "%ld 0\n", TEMP_ID);
+
+            fprintf(output, "d %ld  ", TEMP_ID);
+            for (i = 0; i < oc.size(); i++)
+                fprintf(output, "%i ", (var(oc[i]) + 1) * (-2 * sign(oc[i]) + 1));
+            fprintf(output, "0\n");
+        }
     }
 
-    if (ps.size() == 0)
+    if (ps.size() == 0) {
+        fprintf(output, "f %ld  0\n", id);
+        finalize(NULL);
         return ok = false;
-    else if (ps.size() == 1){
+    } else if (ps.size() == 1) {
         uncheckedEnqueue(ps[0]);
         return ok = (propagate() == CRef_Undef);
-    }else{
-        CRef cr = ca.alloc(ps, false);
+    } else {
         clauses.push(cr);
         attachClause(cr);
     }
@@ -210,7 +230,7 @@ void Solver::removeClause(CRef cr) {
     Clause& c = ca[cr];
 
     if (output != NULL) {
-      fprintf(output, "d ");
+      fprintf(output, "d %ld  ", CLAUSE_ID(cr));
       for (int i = 0; i < c.size(); i++)
         fprintf(output, "%i ", (var(c[i]) + 1) * (-2 * sign(c[i]) + 1));
       fprintf(output, "0\n");
@@ -290,7 +310,7 @@ Lit Solver::pickBranchLit()
 |        rest of literals. There may be others from the same level though.
 |
 |________________________________________________________________________________________________@*/
-void Solver::analyze(CRef confl, vec<Lit>& out_learnt, int& out_btlevel)
+void Solver::analyze(CRef confl, vec<Lit>& out_learnt, int& out_btlevel, vec<uint64_t>& out_chain)
 {
     int pathC = 0;
     Lit p     = lit_Undef;
@@ -302,6 +322,7 @@ void Solver::analyze(CRef confl, vec<Lit>& out_learnt, int& out_btlevel)
 
     do{
         assert(confl != CRef_Undef); // (otherwise should be UIP)
+        out_chain.push(CLAUSE_ID(confl));
         Clause& c = ca[confl];
 
         if (c.learnt())
@@ -310,13 +331,15 @@ void Solver::analyze(CRef confl, vec<Lit>& out_learnt, int& out_btlevel)
         for (int j = (p == lit_Undef) ? 0 : 1; j < c.size(); j++){
             Lit q = c[j];
 
-            if (!seen[var(q)] && level(var(q)) > 0){
-                varBumpActivity(var(q));
-                seen[var(q)] = 1;
-                if (level(var(q)) >= decisionLevel())
-                    pathC++;
-                else
-                    out_learnt.push(q);
+            if (!seen[var(q)]){
+                if (level(var(q)) > 0) {
+                    varBumpActivity(var(q));
+                    seen[var(q)] = 1;
+                    if (level(var(q)) >= decisionLevel())
+                        pathC++;
+                    else
+                        out_learnt.push(q);
+                } else out_chain.push(LITERAL_ID(q));
             }
         }
 
@@ -452,6 +475,26 @@ void Solver::analyzeFinal(Lit p, vec<Lit>& out_conflict)
     }
 
     seen[var(p)] = 0;
+}
+
+
+/*_________________________________________________________________________________________________
+|
+|  analyzeFinal : (p : Lit)  ->  [void]
+|
+|  Description:
+|    Specialized analysis procedure to express the final conflict in terms of assumptions.
+|    Calculates the (possibly empty) set of assumptions that led to the assignment of 'p', and
+|    stores the result in 'out_conflict'.
+|________________________________________________________________________________________________@*/
+void Solver::analyzeTopLevelChain(CRef confl, vec<uint64_t>& out_chain)
+{
+    out_chain.push(CLAUSE_ID(confl));
+    for (int index = trail.size(); index >= 0; index--) {
+        Lit lit = trail[--index];
+        CRef c = reason(var(lit));
+        out_chain.push(c == CRef_Undef ? LITERAL_ID(lit) : CLAUSE_ID(c));
+    }
 }
 
 
@@ -607,8 +650,13 @@ bool Solver::simplify()
 {
     assert(decisionLevel() == 0);
 
-    if (!ok || propagate() != CRef_Undef)
+    CRef confl;
+    if (!ok || (confl = propagate()) != CRef_Undef) {
+        vec<uint64_t> chain;
+        analyzeTopLevelChain(confl, chain);
+        finalize(&chain);
         return ok = false;
+    }
 
     if (nAssigns() == simpDB_assigns || (simpDB_props > 0))
         return true;
@@ -646,6 +694,7 @@ lbool Solver::search(int nof_conflicts)
     int         backtrack_level;
     int         conflictC = 0;
     vec<Lit>    learnt_clause;
+    vec<uint64_t> chain;
     starts++;
 
     for (;;){
@@ -653,25 +702,38 @@ lbool Solver::search(int nof_conflicts)
         if (confl != CRef_Undef){
             // CONFLICT
             conflicts++; conflictC++;
-            if (decisionLevel() == 0) return l_False;
+            if (decisionLevel() == 0) {
+                vec<uint64_t> chain;
+                analyzeTopLevelChain(confl, chain);
+                finalize(&chain);
+                return l_False;
+            }
 
-            learnt_clause.clear();
-            analyze(confl, learnt_clause, backtrack_level);
+            learnt_clause.clear(), chain.clear();
+            analyze(confl, learnt_clause, backtrack_level, chain);
             cancelUntil(backtrack_level);
 
+            uint64_t id;
             if (learnt_clause.size() == 1){
+                id = LITERAL_ID(learnt_clause[0]);
                 uncheckedEnqueue(learnt_clause[0]);
             }else{
                 CRef cr = ca.alloc(learnt_clause, true);
+                assert(cr != 0);
+                id = CLAUSE_ID(cr);
                 learnts.push(cr);
                 attachClause(cr);
                 claBumpActivity(ca[cr]);
                 uncheckedEnqueue(learnt_clause[0], cr);
             }
             if (output != NULL) {
+              fprintf(output, "a %ld  ", id);
               for (int i = 0; i < learnt_clause.size(); i++)
                 fprintf(output, "%i " , (var(learnt_clause[i]) + 1) *
                                   (-2 * sign(learnt_clause[i]) + 1) );
+              fprintf(output, "0  l ");
+              for (int i = chain.size() - 1; i >= 0; i--)
+                fprintf(output, "%ld " , chain[i]);
               fprintf(output, "0\n");
             }
 
@@ -736,6 +798,28 @@ lbool Solver::search(int nof_conflicts)
             newDecisionLevel();
             uncheckedEnqueue(next);
         }
+    }
+}
+
+void Solver::finalize(vec<uint64_t>* chain) {
+    if (chain) {
+        fprintf(output, "a %ld  0  l ", EMPTY_ID);
+        for (int i = chain->size() - 1; i >= 0; i--)
+            fprintf(output, "%ld " , (*chain)[i]);
+        fprintf(output, "0\n");
+    }
+    fprintf(output, "f %ld  0\n", EMPTY_ID);
+    int lim = trail_lim.size() == 0 ? trail.size() : trail_lim[0];
+    for (int i = 0; i < lim; i++)
+        fprintf(output, "f %ld  %d 0\n", LITERAL_ID(trail[i]),
+            (var(trail[i]) + 1) * (-2 * sign(trail[i]) + 1));
+    for (int i = 0; i < clauses.size(); i++) {
+        CRef cr = clauses[i];
+        Clause& c = ca[cr];
+        fprintf(output, "f %ld  ", CLAUSE_ID(cr));
+        for (int j = 0; j < c.size(); j++)
+            fprintf(output, "%i ", (var(c[j]) + 1) * (-2 * sign(c[j]) + 1));
+        fprintf(output, "0\n");
     }
 }
 
