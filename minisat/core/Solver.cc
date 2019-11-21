@@ -185,7 +185,6 @@ bool Solver::addClause_(vec<Lit>& ps)
     }
 
     if (ps.size() == 0) {
-        fprintf(output, "f %ld  0\n", id);
         finalize(NULL);
         return ok = false;
     } else if (ps.size() == 1) {
@@ -339,7 +338,7 @@ void Solver::analyze(CRef confl, vec<Lit>& out_learnt, int& out_btlevel, vec<uin
                         pathC++;
                     else
                         out_learnt.push(q);
-                } else out_chain.push(LITERAL_ID(q));
+                } else out_chain.push(LITERAL_ID(~q));
             }
         }
 
@@ -490,10 +489,9 @@ void Solver::analyzeFinal(Lit p, vec<Lit>& out_conflict)
 void Solver::analyzeTopLevelChain(CRef confl, vec<uint64_t>& out_chain)
 {
     out_chain.push(CLAUSE_ID(confl));
-    for (int index = trail.size(); index >= 0; index--) {
-        Lit lit = trail[--index];
-        CRef c = reason(var(lit));
-        out_chain.push(c == CRef_Undef ? LITERAL_ID(lit) : CLAUSE_ID(c));
+    Clause& c = ca[confl];
+    for (int i = c.size() - 1; i >= 0; i--) {
+        out_chain.push(LITERAL_ID(~c[i]));
     }
 }
 
@@ -560,14 +558,22 @@ CRef Solver::propagate()
 
             // Did not find watch -- clause is unit under assignment:
             *j++ = w;
-            if (value(first) == l_False){
+            if (value(first) == l_False) {
                 confl = cr;
                 qhead = trail.size();
                 // Copy the remaining watches:
                 while (i < end)
                     *j++ = *i++;
-            }else
+            } else {
+                if (output != NULL && decisionLevel() == 0) {
+                    fprintf(output, "a %ld  %i 0  l ", LITERAL_ID(first),
+                        (var(first) + 1) * (-2 * sign(first) + 1));
+                    for (int k = 1; k < c.size(); k++)
+                        fprintf(output, "%ld " , LITERAL_ID(~c[k]));
+                    fprintf(output, "%ld 0\n", CLAUSE_ID(cr));
+                }
                 uncheckedEnqueue(first, cr);
+            }
 
         NextClause:;
         }
@@ -813,6 +819,14 @@ void Solver::finalize(vec<uint64_t>* chain) {
     for (int i = 0; i < lim; i++)
         fprintf(output, "f %ld  %d 0\n", LITERAL_ID(trail[i]),
             (var(trail[i]) + 1) * (-2 * sign(trail[i]) + 1));
+    for (int i = 0; i < learnts.size(); i++) {
+        CRef cr = learnts[i];
+        Clause& c = ca[cr];
+        fprintf(output, "f %ld  ", CLAUSE_ID(cr));
+        for (int j = 0; j < c.size(); j++)
+            fprintf(output, "%i ", (var(c[j]) + 1) * (-2 * sign(c[j]) + 1));
+        fprintf(output, "0\n");
+    }
     for (int i = 0; i < clauses.size(); i++) {
         CRef cr = clauses[i];
         Clause& c = ca[cr];
