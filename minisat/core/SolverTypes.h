@@ -62,6 +62,7 @@ inline  Lit  operator ~(Lit p)              { Lit q; q.x = p.x ^ 1; return q; }
 inline  Lit  operator ^(Lit p, bool b)      { Lit q; q.x = p.x ^ (unsigned int)b; return q; }
 inline  bool sign      (Lit p)              { return p.x & 1; }
 inline  int  var       (Lit p)              { return p.x >> 1; }
+inline  int  dimacs    (Lit p)              { return (var(p) + 1) * (-2 * sign(p) + 1); }
 
 // Mapping Literals to and from compact integers suitable for array indexing:
 inline  int  toInt     (Var v)              { return v; }
@@ -187,6 +188,10 @@ public:
     void         strengthen  (Lit p);
 };
 
+#define CLAUSE_ID(cr)   ((uint64_t)(cr) * 2 + 2)
+#define LITERAL_ID(lit) ((uint64_t)toInt(lit) * 2 + 5)
+#define EMPTY_ID        (uint64_t)3
+#define TEMP_ID         (uint64_t)1
 
 //=================================================================================================
 // ClauseAllocator -- a simple class for allocating memory for clauses:
@@ -233,14 +238,17 @@ class ClauseAllocator : public RegionAllocator<uint32_t>
         RegionAllocator<uint32_t>::free(clauseWord32Size(c.size(), c.has_extra()));
     }
 
-    void reloc(CRef& cr, ClauseAllocator& to)
+    void reloc(CRef& cr, ClauseAllocator& to, FILE* output)
     {
         Clause& c = operator[](cr);
 
         if (c.reloced()) { cr = c.relocation(); return; }
 
+        CRef from = cr;
         cr = to.alloc(c, c.learnt());
         c.relocate(cr);
+        if (output != NULL && from != cr)
+            fprintf(output, " %ld %ld\n", CLAUSE_ID(from), CLAUSE_ID(cr));
 
         // Copy extra data-fields:
         // (This could be cleaned-up. Generalize Clause-constructor to be applicable here instead?)
@@ -249,11 +257,6 @@ class ClauseAllocator : public RegionAllocator<uint32_t>
         else if (to[cr].has_extra()) to[cr].calcAbstraction();
     }
 };
-
-#define CLAUSE_ID(cr)   ((uint64_t)(cr) * 2 + 2)
-#define LITERAL_ID(lit) ((uint64_t)toInt(lit) * 2 + 5)
-#define EMPTY_ID        (uint64_t)3
-#define TEMP_ID         (uint64_t)1
 
 
 //=================================================================================================

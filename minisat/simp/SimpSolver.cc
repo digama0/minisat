@@ -148,6 +148,7 @@ bool SimpSolver::addClause_(vec<Lit>& ps)
         return false;
 
     if(!parsing && output != NULL) {
+      fprintf(output, "o ");
       for (int i = 0; i < ps.size(); i++)
         fprintf(output, "%i " , (var(ps[i]) + 1) * (-2 * sign(ps[i]) + 1) );
       fprintf(output, "0\n");
@@ -204,6 +205,7 @@ bool SimpSolver::strengthenClause(CRef cr, Lit l)
     subsumption_queue.insert(cr);
 
     if (output != NULL) {
+      fprintf(output, "a ");
       for (int i = 0; i < c.size(); i++)
         if (c[i] != l) fprintf(output, "%i " , (var(c[i]) + 1) * (-2 * sign(c[i]) + 1) );
       fprintf(output, "0\n");
@@ -705,17 +707,17 @@ void SimpSolver::relocAll(ClauseAllocator& to)
     for (int i = 0; i < nVars(); i++){
         vec<CRef>& cs = occurs[i];
         for (int j = 0; j < cs.size(); j++)
-            ca.reloc(cs[j], to);
+            ca.reloc(cs[j], to, output);
     }
 
     // Subsumption queue:
     //
     for (int i = 0; i < subsumption_queue.size(); i++)
-        ca.reloc(subsumption_queue[i], to);
+        ca.reloc(subsumption_queue[i], to, output);
 
     // Temporary clause:
     //
-    ca.reloc(bwdsub_tmpunit, to);
+    ca.reloc(bwdsub_tmpunit, to, output);
 }
 
 

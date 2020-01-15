@@ -19,6 +19,7 @@ OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWA
 **************************************************************************************************/
 
 #include <math.h>
+#include <stdio.h>
 
 #include "minisat/mtl/Sort.h"
 #include "minisat/core/Solver.h"
@@ -165,13 +166,13 @@ bool Solver::addClause_(vec<Lit>& ps)
     if (output != NULL) {
         fprintf(output, "o %ld  ", flag ? TEMP_ID : id);
         for (i = 0; i < oc.size(); i++)
-            fprintf(output, "%i ", (var(oc[i]) + 1) * (-2 * sign(oc[i]) + 1));
+            fprintf(output, "%i ", dimacs(oc[i]));
         fprintf(output, "0\n");
 
         if (flag) {
             fprintf(output, "a %ld  ", id);
             for (i = 0; i < ps.size(); i++)
-                fprintf(output, "%i ", (var(ps[i]) + 1) * (-2 * sign(ps[i]) + 1));
+                fprintf(output, "%i ", dimacs(ps[i]));
             fprintf(output, "0  l ");
             for (i = 0; i < chain.size(); i++)
                 fprintf(output, "%ld ", chain[i]);
@@ -179,7 +180,7 @@ bool Solver::addClause_(vec<Lit>& ps)
 
             fprintf(output, "d %ld  ", TEMP_ID);
             for (i = 0; i < oc.size(); i++)
-                fprintf(output, "%i ", (var(oc[i]) + 1) * (-2 * sign(oc[i]) + 1));
+                fprintf(output, "%i ", dimacs(oc[i]));
             fprintf(output, "0\n");
         }
     }
@@ -231,7 +232,7 @@ void Solver::removeClause(CRef cr) {
     if (output != NULL) {
       fprintf(output, "d %ld  ", CLAUSE_ID(cr));
       for (int i = 0; i < c.size(); i++)
-        fprintf(output, "%i ", (var(c[i]) + 1) * (-2 * sign(c[i]) + 1));
+        fprintf(output, "%i ", dimacs(c[i]));
       fprintf(output, "0\n");
     }
 
@@ -362,7 +363,7 @@ void Solver::analyze(CRef confl, vec<Lit>& out_learnt, int& out_btlevel, vec<uin
             abstract_level |= abstractLevel(var(out_learnt[i])); // (maintain an abstraction of levels involved in conflict)
 
         for (i = j = 1; i < out_learnt.size(); i++)
-            if (reason(var(out_learnt[i])) == CRef_Undef || !litRedundant(out_learnt[i], abstract_level))
+            if (reason(var(out_learnt[i])) == CRef_Undef || !litRedundant(out_learnt[i], abstract_level, out_chain))
                 out_learnt[j++] = out_learnt[i];
 
     }else if (ccmin_mode == 1){
@@ -371,12 +372,19 @@ void Solver::analyze(CRef confl, vec<Lit>& out_learnt, int& out_btlevel, vec<uin
 
             if (reason(x) == CRef_Undef)
                 out_learnt[j++] = out_learnt[i];
-            else{
-                Clause& c = ca[reason(var(out_learnt[i]))];
-                for (int k = 1; k < c.size(); k++)
-                    if (!seen[var(c[k])] && level(var(c[k])) > 0){
+            else {
+                int orig_chain = out_chain.size();
+                CRef cr = reason(var(out_learnt[i]));
+                Clause& c = ca[cr];
+                out_chain.push(CLAUSE_ID(cr));
+                for (int k = 1; k < c.size(); k++) {
+                    if (seen[var(c[k])]);
+                    else if (level(var(c[k])) > 0) {
                         out_learnt[j++] = out_learnt[i];
-                        break; }
+                        out_chain.shrink(out_chain.size() - orig_chain);
+                        break;
+                    } else out_chain.push(LITERAL_ID(~c[k]));
+                }
             }
         }
     }else
@@ -409,17 +417,21 @@ void Solver::analyze(CRef confl, vec<Lit>& out_learnt, int& out_btlevel, vec<uin
 
 // Check if 'p' can be removed. 'abstract_levels' is used to abort early if the algorithm is
 // visiting literals at levels that cannot be removed later.
-bool Solver::litRedundant(Lit p, uint32_t abstract_levels)
+bool Solver::litRedundant(Lit p, uint32_t abstract_levels, vec<uint64_t>& chain)
 {
     analyze_stack.clear(); analyze_stack.push(p);
     int top = analyze_toclear.size();
+    int orig_chain = chain.size();
     while (analyze_stack.size() > 0){
         assert(reason(var(analyze_stack.last())) != CRef_Undef);
-        Clause& c = ca[reason(var(analyze_stack.last()))]; analyze_stack.pop();
+        CRef cr = reason(var(analyze_stack.last()));
+        chain.push(CLAUSE_ID(cr));
+        Clause& c = ca[cr]; analyze_stack.pop();
 
         for (int i = 1; i < c.size(); i++){
             Lit p  = c[i];
-            if (!seen[var(p)] && level(var(p)) > 0){
+            if (seen[var(p)]);
+            else if (level(var(p)) > 0) {
                 if (reason(var(p)) != CRef_Undef && (abstractLevel(var(p)) & abstract_levels) != 0){
                     seen[var(p)] = 1;
                     analyze_stack.push(p);
@@ -428,9 +440,10 @@ bool Solver::litRedundant(Lit p, uint32_t abstract_levels)
                     for (int j = top; j < analyze_toclear.size(); j++)
                         seen[var(analyze_toclear[j])] = 0;
                     analyze_toclear.shrink(analyze_toclear.size() - top);
+                    chain.shrink(chain.size() - orig_chain);
                     return false;
                 }
-            }
+            } else chain.push(LITERAL_ID(~p));
         }
     }
 
@@ -566,8 +579,7 @@ CRef Solver::propagate()
                     *j++ = *i++;
             } else {
                 if (output != NULL && decisionLevel() == 0) {
-                    fprintf(output, "a %ld  %i 0  l ", LITERAL_ID(first),
-                        (var(first) + 1) * (-2 * sign(first) + 1));
+                    fprintf(output, "a %ld  %i 0  l ", LITERAL_ID(first), dimacs(first));
                     for (int k = 1; k < c.size(); k++)
                         fprintf(output, "%ld " , LITERAL_ID(~c[k]));
                     fprintf(output, "%ld 0\n", CLAUSE_ID(cr));
@@ -735,8 +747,7 @@ lbool Solver::search(int nof_conflicts)
             if (output != NULL) {
               fprintf(output, "a %ld  ", id);
               for (int i = 0; i < learnt_clause.size(); i++)
-                fprintf(output, "%i " , (var(learnt_clause[i]) + 1) *
-                                  (-2 * sign(learnt_clause[i]) + 1) );
+                fprintf(output, "%i " , dimacs(learnt_clause[i]));
               fprintf(output, "0  l ");
               for (int i = chain.size() - 1; i >= 0; i--)
                 fprintf(output, "%ld " , chain[i]);
@@ -817,22 +828,23 @@ void Solver::finalize(vec<uint64_t>* chain) {
     fprintf(output, "f %ld  0\n", EMPTY_ID);
     int lim = trail_lim.size() == 0 ? trail.size() : trail_lim[0];
     for (int i = 0; i < lim; i++)
-        fprintf(output, "f %ld  %d 0\n", LITERAL_ID(trail[i]),
-            (var(trail[i]) + 1) * (-2 * sign(trail[i]) + 1));
+        fprintf(output, "f %ld  %d 0\n", LITERAL_ID(trail[i]), dimacs(trail[i]));
     for (int i = 0; i < learnts.size(); i++) {
         CRef cr = learnts[i];
         Clause& c = ca[cr];
+        if (c.mark()) continue;
         fprintf(output, "f %ld  ", CLAUSE_ID(cr));
         for (int j = 0; j < c.size(); j++)
-            fprintf(output, "%i ", (var(c[j]) + 1) * (-2 * sign(c[j]) + 1));
+            fprintf(output, "%i ", dimacs(c[j]));
         fprintf(output, "0\n");
     }
     for (int i = 0; i < clauses.size(); i++) {
         CRef cr = clauses[i];
         Clause& c = ca[cr];
+        if (c.mark()) continue;
         fprintf(output, "f %ld  ", CLAUSE_ID(cr));
         for (int j = 0; j < c.size(); j++)
-            fprintf(output, "%i ", (var(c[j]) + 1) * (-2 * sign(c[j]) + 1));
+            fprintf(output, "%i ", dimacs(c[j]));
         fprintf(output, "0\n");
     }
 }
@@ -1008,6 +1020,7 @@ void Solver::toDimacs(FILE* f, const vec<Lit>&)
 
 void Solver::relocAll(ClauseAllocator& to)
 {
+    if (output) fprintf(output, "r\n");
     // All watchers:
     //
     // for (int i = 0; i < watches.size(); i++)
@@ -1018,7 +1031,7 @@ void Solver::relocAll(ClauseAllocator& to)
             // printf(" >>> RELOCING: %s%d\n", sign(p)?"-":"", var(p)+1);
             vec<Watcher>& ws = watches[p];
             for (int j = 0; j < ws.size(); j++)
-                ca.reloc(ws[j].cref, to);
+                ca.reloc(ws[j].cref, to, output);
         }
 
     // All reasons:
@@ -1027,18 +1040,20 @@ void Solver::relocAll(ClauseAllocator& to)
         Var v = var(trail[i]);
 
         if (reason(v) != CRef_Undef && (ca[reason(v)].reloced() || locked(ca[reason(v)])))
-            ca.reloc(vardata[v].reason, to);
+            ca.reloc(vardata[v].reason, to, output);
     }
 
     // All learnt:
     //
     for (int i = 0; i < learnts.size(); i++)
-        ca.reloc(learnts[i], to);
+        ca.reloc(learnts[i], to, output);
 
     // All original:
     //
     for (int i = 0; i < clauses.size(); i++)
-        ca.reloc(clauses[i], to);
+        ca.reloc(clauses[i], to, output);
+
+    if (output) fprintf(output, " 0\n");
 }
 
 
